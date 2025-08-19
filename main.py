@@ -75,7 +75,7 @@ def cargar_y_limpiar_datos(uploaded_files, force_filename=False):
                     content_str = content.decode("utf-8-sig")
                 except UnicodeDecodeError:
                     content_str = content.decode("latin1")
-                head = content_str.split('\n',1)[0]
+                head = content_str.split('\n', 1)[0]
                 delimiter = ';' if head.count(';') > head.count(',') else ','
                 df_part = pd.read_csv(io.StringIO(content_str), delimiter=delimiter)
                 if force_filename:
@@ -96,19 +96,33 @@ def cargar_y_limpiar_datos(uploaded_files, force_filename=False):
                 df_part.columns = cols
 
             if (not force_filename) and "Cleaned_EA" not in df_part.columns:
-                posibles = [c for c in df_part.columns if c.lower() in ['coment','comment','ea','magic','magicnumber']]
+                posibles = [c for c in df_part.columns if
+                            c.lower() in ['coment', 'comment', 'ea', 'magic', 'magicnumber']]
                 si_ea = 'Coment' if 'Coment' in df_part.columns else (posibles[0] if posibles else None)
                 if si_ea:
                     df_part["Cleaned_EA"] = df_part[si_ea].astype(str)
                 else:
                     df_part["Cleaned_EA"] = "EA_desconocido"
 
+            # --------------- LIMPIEZA DE "None" Y VACÍOS ---------------
+            cols_numericas = [
+                "Size", "Price", "S / L", "T / P", "Close Price",
+                "Commission", "Taxes", "Swap", "Profit", "MagicNumber"
+            ]
+            for col in cols_numericas:
+                if col in df_part.columns:
+                    df_part[col] = df_part[col].replace(["None", ""], pd.NA)  # O np.nan si prefieres
+            # ----------------------------------------------------------
+
             df_part = pl.from_pandas(df_part)
+
+            # Ahora forzamos los tipos:
             for col, tpo in tipos_forzados.items():
                 if col in df_part.columns:
                     df_part = df_part.with_columns(
                         [pl.col(col).cast(tpo, strict=False).alias(col)]
                     )
+
             falta_col = [col for col in columnas_necesarias if col not in df_part.columns]
             if falta_col:
                 st.error(f"El archivo {uf.name} no tiene todas las columnas requeridas. "
@@ -259,7 +273,7 @@ if df is not None and not df.is_empty():
             pl.col('Close Time').dt.strftime('%Y-%m').alias('Mes')
         ])
 
-        excluir_comentarios = ["deposited", "deposit", "withdraw", "withdrawal", "api",  "canceled", "cancelled", "cancelado"]
+        excluir_comentarios = ["deposited", "deposit", "withdraw", "withdrawal", "api", "apf", "\{", "transfer",  "canceled", "cancelled", "cancelado"]
         df = df.filter(
             pl.col('Coment').is_not_null() &
             ~pl.col('Coment').str.to_lowercase().str.contains('|'.join(excluir_comentarios))
@@ -347,16 +361,24 @@ if df is not None and not df.is_empty():
     st.markdown("#### DD máximo global (portafolio de todas las EAs seleccionadas combinadas, en el periodo)")
     df_portafolio = df_f.filter(pl.col('Cleaned_EA').is_in(resumen['Cleaned_EA']))
     df_portafolio = df_portafolio.sort('Close Time')
+
     df_portafolio = df_portafolio.with_columns(
-        (pl.col('Profit') * multiplicador).alias('Profit_neto'),
-        (pl.col('Commission') * multiplicador).alias('Commission_multi'),
-        (pl.col('Taxes') * multiplicador).alias('Taxes_multi'),
-        (pl.col('Swap') * multiplicador).alias('Swap_multi')
+        (pl.col('Profit') * multiplicador).fill_null(0).alias('Profit_neto'),
+        (pl.col('Commission') * multiplicador).fill_null(0).alias('Commission_multi'),
+        (pl.col('Taxes') * multiplicador).fill_null(0).alias('Taxes_multi'),
+        (pl.col('Swap') * multiplicador).fill_null(0).alias('Swap_multi')
     )
+
     df_portafolio = df_portafolio.with_columns(
         pl.col('Profit_neto').cum_sum().alias('Saldo_Acumulado')
     )
+
+    df_portafolio = df_portafolio.with_columns(
+        pl.col('Saldo_Acumulado').fill_null(0)
+    )
+
     saldo = df_portafolio['Saldo_Acumulado'].to_numpy()
+    saldo = np.nan_to_num(saldo, nan=0.0)
     peak = np.maximum.accumulate(saldo)
     dd = saldo - peak
     dd_max_portafolio = dd.min() if dd.size > 0 else np.nan
@@ -368,7 +390,7 @@ if df is not None and not df.is_empty():
     st.plotly_chart(fig, use_container_width=True)
     figdd = px.line(df_portafolio.to_pandas(), x='Close Time', y=dd, title="Drawdown global en el tiempo")
     st.plotly_chart(figdd, use_container_width=True)
-    st.dataframe(resumen.to_pandas().set_index('Cleaned_EA'), use_container_width=True)
+    st.dataframe(resumen.to_pandas().set_index('Cleaned_EA').fillna(0), use_container_width=True)
 
     # =========== KPIs DETALLADOS Y EXPORTACIÓN EXCEL ===========
     rp = resumen.to_pandas().set_index('Cleaned_EA')

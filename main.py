@@ -4,16 +4,46 @@ import polars as pl
 import plotly.express as px
 import io
 import numpy as np
+import os
 
 st.set_page_config(layout="wide")
 st.title('Dashboard Trades de Robots (EAs) - Drawdown máximo real por EA')
 st.markdown("""
-Sube uno o varios archivos Excel o CSV de trades (puedes exportarlos de MetaTrader, cTrader, etc).
-
+Sube archivos Excel o CSV de trades de MetaTrader, cTrader (multi-EA, campo Coment), y/o StrategyQuant (SQX, una estrategia).
 - Todas las métricas y KPIs usan **Profit total neto = Profit - |Comisiones+Tasas+Swap|** multiplicado si lo deseas.
 """)
 
-def cargar_y_limpiar_datos(uploaded_files):
+# --- Mapeador para archivos CSV exportados de StrategyQuant/SQX ---
+def map_sqx_csv_to_standard(df, filename):
+    rename_dict = {
+        "Open time": "Open Time",
+        "Close time": "Close Time",
+        "Open price": "Price",
+        "Close price": "Close Price",
+        "Symbol": "Item",
+        "Profit/Loss": "Profit",
+        "Commission": "Commission",
+        "Swap": "Swap",
+        "MagicNumber": "MagicNumber",
+    }
+    columns_renamed = {k: v for k, v in rename_dict.items() if k in df.columns}
+    df = df.rename(columns=columns_renamed)
+    for col in ["S / L", "T / P", "Taxes", "Coment"]:
+        if col not in df.columns:
+            df[col] = "" if col == "Coment" else np.nan
+    df["Cleaned_EA"] = filename
+    # Campos obligatorios vacíos si faltan (para no petar en conversiones)
+    needed = ["Type", "Size", "Item", "Price", "S / L", "T / P", "Close Time", "Close Price", "Commission", "Taxes", "Swap", "Profit", "MagicNumber", "Coment", "Cleaned_EA"]
+    for col in needed:
+        if col not in df.columns:
+            df[col] = ""
+    # Faltan Ticket? les ponemos índice
+    if "Ticket" not in df.columns:
+        df["Ticket"] = np.arange(1, len(df) + 1)
+    return df
+
+# --- Carga y limpia, soporta botón SQX/MT4 distintos ---
+def cargar_y_limpiar_datos(uploaded_files, force_filename=False):
     dfs = []
     columnas_necesarias = [
         "Ticket", "Open Time", "Type", "Size", "Item", "Price", "S / L", "T / P",
@@ -36,19 +66,26 @@ def cargar_y_limpiar_datos(uploaded_files):
     for uf in uploaded_files:
         try:
             is_csv = uf.name.lower().endswith('.csv')
+            is_excel = uf.name.lower().endswith('.xlsx') or uf.name.lower().endswith('.xls')
             if is_csv:
                 uf.seek(0)
                 content = uf.read()
                 uf.seek(0)
                 try:
-                    content_str = content.decode("utf-8")
+                    content_str = content.decode("utf-8-sig")
                 except UnicodeDecodeError:
                     content_str = content.decode("latin1")
                 head = content_str.split('\n',1)[0]
                 delimiter = ';' if head.count(';') > head.count(',') else ','
                 df_part = pd.read_csv(io.StringIO(content_str), delimiter=delimiter)
-            else:
+                if force_filename:
+                    fname_noext = os.path.splitext(os.path.basename(uf.name))[0]
+                    df_part = map_sqx_csv_to_standard(df_part, fname_noext)
+            elif is_excel:
                 df_part = pd.read_excel(uf, sheet_name=1, engine='openpyxl')
+            else:
+                st.error(f"Solo se aceptan archivos CSV o Excel. ({uf.name})")
+                return None
 
             if "Price.1" in df_part.columns:
                 df_part = df_part.rename(columns={"Price.1": "Close Price"})
@@ -58,7 +95,7 @@ def cargar_y_limpiar_datos(uploaded_files):
                 cols[price_locs[1]] = "Close Price"
                 df_part.columns = cols
 
-            if "Cleaned_EA" not in df_part.columns:
+            if (not force_filename) and "Cleaned_EA" not in df_part.columns:
                 posibles = [c for c in df_part.columns if c.lower() in ['coment','comment','ea','magic','magicnumber']]
                 si_ea = 'Coment' if 'Coment' in df_part.columns else (posibles[0] if posibles else None)
                 if si_ea:
@@ -77,6 +114,19 @@ def cargar_y_limpiar_datos(uploaded_files):
                 st.error(f"El archivo {uf.name} no tiene todas las columnas requeridas. "
                          f"Las que faltan: {falta_col}")
                 return None
+            # Normaliza columnas y orden:
+            columnas_finales = [
+                "Ticket", "Open Time", "Type", "Size", "Item", "Price", "S / L", "T / P",
+                "Close Time", "Close Price", "Commission", "Taxes", "Swap", "Profit",
+                "MagicNumber", "Coment", "Cleaned_EA"
+            ]
+
+            # Limita y reordena las columnas finales
+            faltan = [col for col in columnas_finales if col not in df_part.columns]
+            for col in faltan:
+                df_part = df_part.with_columns([pl.lit(np.nan).alias(col)])
+            df_part = df_part.select(columnas_finales)
+
             dfs.append(df_part)
         except Exception as e:
             st.error(f"No se pudo leer el archivo {uf.name}. Error: {e}")
@@ -171,30 +221,45 @@ def descargar_dataframe(df, nombre_archivo, label):
         mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     )
 
-uploaded_files = st.file_uploader(
-    "Carga uno o varios archivos Excel o CSV de trades",
-    type=['xlsx','xls','csv'],
+# --- DOS BOTONES DE UPLOAD ---
+uploaded_mt4 = st.file_uploader(
+    "Archivos de MT4/cTrader (multi-EA)",
+    type=['csv','xlsx','xls'],
     accept_multiple_files=True,
-    help="Puedes seleccionar varios archivos para combinar los datos."
+    key="mt4"
+)
+uploaded_sqx = st.file_uploader(
+    "Archivos CSV de StrategyQuant (SQX, mono-EA/nombre del archivo)",
+    type=['csv'],
+    accept_multiple_files=True,
+    key="sqx"
 )
 
-if uploaded_files:
-    df = cargar_y_limpiar_datos(uploaded_files)
-    if df is None:
-        st.stop()
-    if 'Cleaned_EA' not in df.columns:
-        st.error("La columna Cleaned_EA no existe en los datos.")
-        st.stop()
+# --- CARGA AMBOS SEGÚN BOTÓN ---
+df_mt4 = cargar_y_limpiar_datos(uploaded_mt4, force_filename=False) if uploaded_mt4 else None
+df_sqx = cargar_y_limpiar_datos(uploaded_sqx, force_filename=True) if uploaded_sqx else None
+
+df = None
+if df_mt4 is not None and df_sqx is not None:
+    df = pl.concat([df_mt4, df_sqx])
+elif df_mt4 is not None:
+    df = df_mt4
+elif df_sqx is not None:
+    df = df_sqx
+
+# --- DASHBOARD PRINCIPAL ---
+if df is not None and not df.is_empty():
     with pl.StringCache():
         df = df.with_columns([
-            pl.col('Open Time').str.strptime(pl.Datetime, format="%Y.%m.%d %H:%M:%S", strict=False).alias('Open Time'),
-            pl.col('Close Time').str.strptime(pl.Datetime, format="%Y.%m.%d %H:%M:%S", strict=False).alias('Close Time'),
+            pl.col('Open Time').cast(pl.Utf8).str.strptime(pl.Datetime, format="%Y.%m.%d %H:%M:%S", strict=False).alias('Open Time'),
+            pl.col('Close Time').cast(pl.Utf8).str.strptime(pl.Datetime, format="%Y.%m.%d %H:%M:%S", strict=False).alias('Close Time'),
             pl.col('Cleaned_EA').cast(pl.Utf8).alias('Cleaned_EA'),
         ])
         df = df.with_columns([
             pl.col('Close Time').dt.strftime('%Y-%m').alias('Mes')
         ])
-        excluir_comentarios = ["deposited", "deposit", "withdraw", "withdrawal", "api", "canceled", "cancelado"]
+
+        excluir_comentarios = ["deposited", "deposit", "withdraw", "withdrawal", "api",  "canceled", "cancelled", "cancelado"]
         df = df.filter(
             pl.col('Coment').is_not_null() &
             ~pl.col('Coment').str.to_lowercase().str.contains('|'.join(excluir_comentarios))
@@ -213,13 +278,29 @@ if uploaded_files:
                    "Ejemplos: " + ", ".join(ej))
 
     st.sidebar.header("Filtros")
-    fecha_min = df['Close Time'].min().date()
-    fecha_max = df['Close Time'].max().date()
+    fecha_min_raw = df['Close Time'].min()
+    fecha_max_raw = df['Close Time'].max()
+    if fecha_min_raw is None or fecha_max_raw is None:
+        st.error("No se encontraron fechas de cierre válidas en los datos importados ('Close Time').")
+        st.stop()
+
+    try:
+        fecha_min = fecha_min_raw.date()
+        fecha_max = fecha_max_raw.date()
+    except Exception:
+        fecha_min = pd.Timestamp(fecha_min_raw).date() if fecha_min_raw else None
+        fecha_max = pd.Timestamp(fecha_max_raw).date() if fecha_max_raw else None
+
+    if fecha_min is None or fecha_max is None:
+        st.error("No se pudo determinar el rango de fechas de cierre en los datos.")
+        st.stop()
+
     fecha_desde, fecha_hasta = st.sidebar.date_input(
         'Rango de fechas (Close Time)',
         value=[fecha_min, fecha_max],
         min_value=fecha_min, max_value=fecha_max,
-        help="Filtra por la fecha de cierre de las operaciones."
+        help="Filtra por la fecha de cierre de las operaciones.",
+        key="main_rango_fechas"
     )
     if isinstance(fecha_desde, list):
         fecha_desde, fecha_hasta = fecha_desde
@@ -257,7 +338,6 @@ if uploaded_files:
         st.warning("No hay datos que coincidan con el filtro actual.")
         st.stop()
     resumen, meses_disponibles = calcular_resumen(df_f, multiplicador)
-    meses_cols = [col for col in resumen.columns if col.startswith('Profit_20')]
     resumen = resumen.filter(
         (pl.col('Profit_Total') >= profit_min) &
         (pl.col('DD_Max_Curva') >= -dd_maximo_max)
@@ -339,5 +419,65 @@ if uploaded_files:
 
     descargar_dataframe(pl.from_pandas(export_excel), "resumen_EAs.xlsx", "Descargar tabla resumen en Excel")
     descargar_dataframe(df_f, "Trades_EAs_filtrado.xlsx", "Descargar Todos Trades en Excel")
+
+
+    # -----------  EXCEL MENSUAL  (igual que tienes)  -----------
+    def generar_excel_mensual(df_f, multiplicador):
+        try:
+            if df_f.is_empty():
+                st.warning("No hay datos para generar el reporte mensual")
+                return None
+            output = io.BytesIO()
+            df_f = df_f.with_columns(
+                (pl.col('Profit') * multiplicador).alias('Profit_neto'),
+                pl.col('Coment').str.to_lowercase().str.contains("tp").alias('Es_TP')
+            )
+            meses = df_f['Mes'].unique().sort().to_list()
+            if not meses:
+                st.warning("No se encontraron meses con datos")
+                return None
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                hojas_creadas = 0
+                for mes in meses:
+                    try:
+                        df_mes = df_f.filter(pl.col('Mes') == mes)
+                        if df_mes.is_empty():
+                            continue
+                        resumen_mes = df_mes.group_by(['Cleaned_EA', 'Item', 'MagicNumber']).agg([
+                            pl.col('Profit_neto').sum().alias('Sumatorio'),
+                            pl.col('Ticket').count().alias('N_Trades'),
+                            pl.col('Es_TP').sum().alias('N_TPs')
+                        ])
+                        resumen_mes = resumen_mes.select([
+                            'Cleaned_EA', 'Item', 'Sumatorio', 'N_Trades', 'MagicNumber', 'N_TPs'
+                        ])
+                        resumen_mes.to_pandas().to_excel(
+                            writer, sheet_name=str(mes), index=False)
+                        hojas_creadas += 1
+                    except Exception as e:
+                        st.error(f"Error procesando mes {mes}: {str(e)}")
+                        continue
+                if hojas_creadas == 0:
+                    pd.DataFrame(
+                        columns=['Cleaned_EA', 'Item', 'Sumatorio', 'N_Trades', 'MagicNumber', 'N_TPs']).to_excel(
+                        writer, sheet_name="Sin datos", index=False)
+                    st.warning("No se encontraron datos válidos para ningún mes")
+            output.seek(0)
+            return output if hojas_creadas > 0 else None
+        except Exception as e:
+            st.error(f"Error generando Excel mensual: {str(e)}")
+            return None
+
+    excel_mensual = generar_excel_mensual(df_f, multiplicador)
+    if excel_mensual is not None:
+        st.download_button(
+            label="Descarga excel con info mensual resumida",
+            data=excel_mensual,
+            file_name="resumen_mensual_EAs.xlsx",
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+    else:
+        st.warning("No hay datos suficientes para generar el reporte mensual")
+
 else:
-    st.info("Por favor, carga tus archivos Excel o CSV primero.")
+    st.info("Por favor, sube archivos de MT4/cTrader y/o StrategyQuant en los botones correspondientes arriba.")

@@ -51,7 +51,7 @@ def cargar_y_limpiar_datos(uploaded_files, force_filename=False):
         "MagicNumber", "Coment", "Cleaned_EA"
     ]
     tipos_forzados = {
-        "Ticket": pl.Int64,
+        "Ticket": pl.Float64,
         "Size": pl.Float64,
         "Price": pl.Float64,
         "S / L": pl.Float64,
@@ -61,7 +61,7 @@ def cargar_y_limpiar_datos(uploaded_files, force_filename=False):
         "Taxes": pl.Float64,
         "Swap": pl.Float64,
         "Profit": pl.Float64,
-        "MagicNumber": pl.Int64,
+        "MagicNumber": pl.Float64,
     }
     for uf in uploaded_files:
         try:
@@ -82,7 +82,7 @@ def cargar_y_limpiar_datos(uploaded_files, force_filename=False):
                     fname_noext = os.path.splitext(os.path.basename(uf.name))[0]
                     df_part = map_sqx_csv_to_standard(df_part, fname_noext)
             elif is_excel:
-                df_part = pd.read_excel(uf, sheet_name=1, engine='openpyxl')
+                df_part = pd.read_excel(uf, engine='openpyxl')
             else:
                 st.error(f"Solo se aceptan archivos CSV o Excel. ({uf.name})")
                 return None
@@ -229,8 +229,8 @@ uploaded_mt4 = st.file_uploader(
     key="mt4"
 )
 uploaded_sqx = st.file_uploader(
-    "Archivos CSV de StrategyQuant (SQX, mono-EA/nombre del archivo)",
-    type=['csv'],
+    "Archivos CSV/XLSX de StrategyQuant O EXPORTADOS DE LA APP (mono-EA/nombre del archivo)",
+    type=['csv','xlsx','xls'],
     accept_multiple_files=True,
     key="sqx"
 )
@@ -418,7 +418,34 @@ if df is not None and not df.is_empty():
     ], ignore_index=True)
 
     descargar_dataframe(pl.from_pandas(export_excel), "resumen_EAs.xlsx", "Descargar tabla resumen en Excel")
-    descargar_dataframe(df_f, "Trades_EAs_filtrado.xlsx", "Descargar Todos Trades en Excel")
+    # ==== Exportar todos los trades con columnas estándar SQX/app ====
+    columnas_estandar = [
+        "Ticket", "Open Time", "Type", "Size", "Item", "Price", "S / L", "T / P",
+        "Close Time", "Close Price", "Commission", "Taxes", "Swap", "Profit",
+        "MagicNumber", "Coment", "Cleaned_EA"
+    ]
+
+    for col in columnas_estandar:
+        if col not in df_f.columns:
+            df_f = df_f.with_columns([pl.lit("").alias(col)])
+    df_f_export = df_f.select(columnas_estandar)
+
+    df_f_export = df_f_export.with_columns([
+        pl.when(pl.col("Coment").is_null() | (pl.col("Coment") == ""))
+        .then(pl.col("Cleaned_EA"))
+        .otherwise(pl.col("Coment"))
+        .alias("Coment")
+    ])
+
+    df_f_export = df_f_export.with_columns([
+        pl.col('Open Time').dt.strftime('%Y.%m.%d %H:%M:%S').alias('Open Time'),
+        pl.col('Close Time').dt.strftime('%Y.%m.%d %H:%M:%S').alias('Close Time'),
+    ])
+
+    descargar_dataframe(df_f_export, "Export_trades_EAs.xlsx", "Descargar Todos Trades en Excel")
+    st.info(
+        "⬆️ Este archivo Excel puede ser reimportado usando el botón de carga SQX, para recuperar filtros o combinar datasets."
+    )
 
 
     # -----------  EXCEL MENSUAL  (igual que tienes)  -----------

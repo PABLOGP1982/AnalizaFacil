@@ -1,10 +1,7 @@
 streamlit
 pandas
 polars
+numpy
 plotly
 openpyxl
-io
-numpy
-os
-itertools
-math
+xlsxwriter

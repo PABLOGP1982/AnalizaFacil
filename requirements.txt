@@ -3,4 +3,8 @@ pandas
 polars
 plotly
 openpyxl
+io
 numpy
+os
+itertools
+math

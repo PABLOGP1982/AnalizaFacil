@@ -541,47 +541,64 @@ if df is not None and not df.is_empty():
                 # ---------------------------------------------------
                 # DESCARGA RESUMEN CLASIFICACIÓN OPTIMIZACIÓN (NUEVO)
                 # ---------------------------------------------------
+                # ---------------------------------------------------
+                # DESCARGA RESUMEN CLASIFICACIÓN OPTIMIZACIÓN (NUEVO MEJORADO)
+                # ---------------------------------------------------
                 import xlsxwriter
 
                 if len(resultados_ordenados) > 0:
-                    # 1. Preparamos los encabezados:
                     n_eas = portfolio_size
-                    # Nombre de columnas para las EAs dinámico según tamaño de portafolio:
                     ea_cols = [f"EA_{i + 1}" for i in range(n_eas)]
                     tabla = []
-
-                    # 2. Construimos la tabla resumen (sólo los top_n ordenados, o todos si quieres)
                     for idx, res in enumerate(resultados_ordenados[:top_n]):
                         fila = [idx + 1]
-                        # EAs del portafolio
                         eas = list(res["combo"])
-                        # Añado 'None' si son menos que el máximo display
                         eas += [None] * (n_eas - len(eas))
                         fila.extend(eas)
-                        # Métricas clave
+                        # SIN DECIMALES menos "Profit/DD"
                         fila.extend([
-                            res['max_dd'],
-                            res['profit'],
-                            res['std_month'],
-                            res['max_dd_duration'],
-                            res['ret_dd']
+                            int(round(res['max_dd'])),  # Max DD entero
+                            int(round(res['profit'])),  # Profit entero
+                            int(round(res['std_month'])),  # Std mensual entero
+                            int(round(res['max_dd_duration'])),  # Duración DD entero
+                            round(res['ret_dd'], 2)  # Profit/DD con dos decimales
                         ])
                         tabla.append(fila)
-
                     df_out = pd.DataFrame(
                         tabla,
                         columns=(["Rank"] + ea_cols + ["Max DD", "Profit total", "Estabilidad (Std)", "Duración DD",
                                                        "Profit/DD"])
                     )
 
-                    # 3. Montamos el archivo Excel con una primera fila extra de info
+                    # Archivo Excel con info en la Fila 1, tabla a partir de la 2
                     excel_bytes = io.BytesIO()
                     with pd.ExcelWriter(excel_bytes, engine='xlsxwriter') as writer:
-                        info_df = pd.DataFrame([
-                            [f"Nº EAs: {n_eas} / Clasificación: {metric_option}"]
-                        ])
-                        info_df.to_excel(writer, sheet_name="Resumen", header=False, index=False, startrow=0)
-                        df_out.to_excel(writer, sheet_name="Resumen", startrow=2, index=False)
+                        workbook = writer.book
+
+                        worksheet = workbook.add_worksheet("Resumen")
+                        writer.sheets["Resumen"] = worksheet
+
+                        # Fila 1
+                        info_text = f"Nº EAs: {n_eas} / Clasificación: {metric_option}"
+                        worksheet.write(0, 0, info_text)
+
+                        # Fila 2: encabezados
+                        for ci, col in enumerate(df_out.columns):
+                            worksheet.write(1, ci, col)
+
+                        # Fila 3 en adelante: datos
+                        for ri, fila in enumerate(df_out.values):
+                            for ci, val in enumerate(fila):
+                                worksheet.write(ri + 2, ci, val)
+
+                        # Si quieres ajustar formato (opcional, mejora visual):
+                        integer_format = workbook.add_format({'num_format': '0'})
+                        float_format = workbook.add_format({'num_format': '0.00'})
+                        # Max DD, Profit, Std, Duración DD en int, Profit/DD con 2 decimales
+                        for col in range(len(["Rank"] + ea_cols), len(df_out.columns) - 1):
+                            worksheet.set_column(col, col, 15, integer_format)
+                        worksheet.set_column(len(df_out.columns) - 1, len(df_out.columns) - 1, 13, float_format)
+
                     excel_bytes.seek(0)
 
                     st.download_button(

@@ -495,12 +495,22 @@ if df is not None and not df.is_empty():
                     "Profit/DD": round(notnan(ret_dd),2)
                 }
             for n_eas in lista_n_eas:
-                combos = list(itertools.combinations(estrategias_unicas, n_eas))
-                if len(combos) > limite_combos:
-                    idxs = np.random.choice(len(combos), limite_combos, replace=False)
-                    combos_sample = [combos[i] for i in idxs]
+                from random import sample
+
+                n_eas_actual = n_eas
+                total_eas = len(estrategias_unicas)
+                max_combos = math.comb(total_eas, n_eas_actual)
+
+                if max_combos <= limite_combos:
+                    # Si es razonable, sí las generamos todas
+                    combos_sample = list(itertools.combinations(estrategias_unicas, n_eas_actual))
                 else:
-                    combos_sample = combos
+                    # Genera muestra aleatoria sin generar todas primero
+                    combos_set = set()
+                    while len(combos_set) < limite_combos:
+                        combo = tuple(sorted(sample(estrategias_unicas, n_eas_actual)))
+                        combos_set.add(combo)
+                    combos_sample = list(combos_set)
                 for metrica in metricas_sel:
                     estado.info(f"Nº EAs: {n_eas} | Métrica: {metrica} | Combos: {len(combos_sample)}")
                     partial_results = Parallel(n_jobs=-1, prefer="threads")(

@@ -1,7 +1,8 @@
 streamlit
-pandas
 polars
+pandas
 numpy
 plotly
 openpyxl
 xlsxwriter
+joblib

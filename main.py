@@ -265,6 +265,113 @@ if df is not None and not df.is_empty():
         st.plotly_chart(figdd, use_container_width=True)
         st.dataframe(resumen.to_pandas().set_index('Cleaned_EA'), use_container_width=True)
 
+        # =========  DESCARGAS EXCEL ============
+        import time
+
+        # 1. Descargar resumen
+        def descargar_dataframe(df, nombre_archivo, label):
+            towrite = io.BytesIO()
+            df.to_pandas().to_excel(towrite, index=False, engine='openpyxl')
+            towrite.seek(0)
+            st.download_button(
+                label=label,
+                data=towrite,
+                file_name=nombre_archivo,
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                key=f"{label}_{time.time()}"
+            )
+
+        descargar_dataframe(resumen, "resumen_EAs.xlsx", "Exce: tabla resumen")
+
+        # 2. Descargar todos los trades en formato estándar + info pegada
+        columnas_estandar = [
+            "Ticket", "Open Time", "Type", "Size", "Item", "Price", "S / L", "T / P",
+            "Close Time", "Close Price", "Commission", "Taxes", "Swap", "Profit",
+            "MagicNumber", "Coment", "Cleaned_EA"
+        ]
+        for col in columnas_estandar:
+            if col not in df_f.columns:
+                df_f = df_f.with_columns([pl.lit("").alias(col)])
+        df_f_export = df_f.select(columnas_estandar)
+        df_f_export = df_f_export.with_columns([
+            pl.when(pl.col("Coment").is_null() | (pl.col("Coment") == ""))
+            .then(pl.col("Cleaned_EA")).otherwise(pl.col("Coment")).alias("Coment"),
+        ])
+        df_f_export = df_f_export.with_columns([
+            pl.col('Open Time').dt.strftime('%Y.%m.%d %H:%M:%S').alias('Open Time'),
+            pl.col('Close Time').dt.strftime('%Y.%m.%d %H:%M:%S').alias('Close Time'),
+        ])
+        col_btn, col_info = st.columns([2, 10], gap="small")
+        with col_btn:
+            descargar_dataframe(df_f_export, "Export_trades_EAs.xlsx", "Excel: Todos Trades")
+        with col_info:
+            st.markdown(
+                '<div style="margin-top:8px; margin-left:-32px">'
+                '<span style="font-size:16px;">'
+                '<span style="color:#2a8cff;"><b>ℹ️</b></span> '
+                'Este excel sirve de entrada para este y otros programas'
+                '</span></div>',
+                unsafe_allow_html=True
+            )
+
+        # 3. Descargar excel mensual por hoja
+        def generar_excel_mensual(df_f, multiplicador):
+            try:
+                if df_f.is_empty():
+                    st.warning("No hay datos para generar el reporte mensual")
+                    return None
+                output = io.BytesIO()
+                df_f = df_f.with_columns(
+                    (pl.col('Profit') * multiplicador).alias('Profit_neto'),
+                    pl.col('Coment').str.to_lowercase().str.contains("tp").alias('Es_TP')
+                )
+                meses = df_f['Mes'].unique().sort().to_list()
+                if not meses:
+                    st.warning("No se encontraron meses con datos")
+                    return None
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    hojas_creadas = 0
+                    for mes in meses:
+                        try:
+                            df_mes = df_f.filter(pl.col('Mes') == mes)
+                            if df_mes.is_empty():
+                                continue
+                            resumen_mes = df_mes.group_by(['Cleaned_EA', 'Item', 'MagicNumber']).agg([
+                                pl.col('Profit_neto').sum().alias('Sumatorio'),
+                                pl.col('Ticket').count().alias('N_Trades'),
+                                pl.col('Es_TP').sum().alias('N_TPs')
+                            ])
+                            resumen_mes = resumen_mes.select([
+                                'Cleaned_EA', 'Item', 'Sumatorio', 'N_Trades', 'MagicNumber', 'N_TPs'
+                            ])
+                            resumen_mes.to_pandas().to_excel(writer, sheet_name=str(mes), index=False)
+                            hojas_creadas += 1
+                        except Exception as e:
+                            st.error(f"Error procesando mes {mes}: {str(e)}")
+                            continue
+                    if hojas_creadas == 0:
+                        pd.DataFrame(
+                            columns=['Cleaned_EA', 'Item', 'Sumatorio', 'N_Trades', 'MagicNumber', 'N_TPs']).to_excel(
+                            writer, sheet_name="Sin datos", index=False)
+                        st.warning("No se encontraron datos válidos para ningún mes")
+                output.seek(0)
+                return output if hojas_creadas > 0 else None
+            except Exception as e:
+                st.error(f"Error generando Excel mensual: {str(e)}")
+                return None
+
+        excel_mensual = generar_excel_mensual(df_f, multiplicador)
+        if excel_mensual is not None:
+            st.download_button(
+                label="Excel: Información mensual resumida",
+                data=excel_mensual,
+                file_name="resumen_mensual_EAs.xlsx",
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                key=f"mensual_{time.time()}"
+            )
+        else:
+            st.warning("No hay datos suficientes para generar el reporte mensual")
+
     # ==== TAB OPTIMIZADOR "TRADICIONAL" ====
     with tab_optim:
         st.header("🔨 Optimizador de Portafolios")
